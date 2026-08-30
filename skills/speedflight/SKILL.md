@@ -42,6 +42,8 @@ signature is the safety.
 - First run in a repo (no `.env.speedflight`, or no `scripts/speedflight.sh`):
   do **Setup**, then **Share a build**.
 - Every later run: **Share a build**.
+- If the user asks for it to run without a Mac, or from a Linux devbox or
+  sandbox: **On request: run it in GitHub Actions**.
 
 ---
 
@@ -194,16 +196,19 @@ FALLBACK_BASE="https://speedflight.jake-7c3.workers.dev"
 OUT="build/share"
 
 # The page shows a branch and commit, so those must be real: everything
-# committed, and the commit on the remote.
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "working tree is dirty: commit before sharing a build" >&2
-  exit 1
-fi
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+# committed, and the commit on the remote. Under CI the checkout is the
+# pushed commit by definition, and a detached HEAD has no upstream to test.
+BRANCH="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
 COMMIT="$(git rev-parse HEAD)"
-if ! git merge-base --is-ancestor "$COMMIT" "@{u}" 2>/dev/null; then
-  echo "HEAD is not pushed: git push -u origin $BRANCH" >&2
-  exit 1
+if [[ -z "${CI:-}" ]]; then
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "working tree is dirty: commit before sharing a build" >&2
+    exit 1
+  fi
+  if ! git merge-base --is-ancestor "$COMMIT" "@{u}" 2>/dev/null; then
+    echo "HEAD is not pushed: git push -u origin $BRANCH" >&2
+    exit 1
+  fi
 fi
 
 # Uncomment for XcodeGen projects: the project file is generated and gitignored.
@@ -363,6 +368,101 @@ If the script fails:
   are throwaway.
 - Upload timeouts: the script retries and falls back to the workers.dev host
   on its own. Run it again if both fail.
+
+---
+
+# On request: run it in GitHub Actions
+
+Only when the user asks. The default is the Mac in front of them. The
+reason to ask is a workflow with no Mac at all: an agent on a Linux devbox
+or a cloud sandbox edits the iOS app, pushes, and GitHub's macOS runners
+cut, sign, and upload the build. The user installs from the page link on
+their phone. That is end-to-end iOS development from a machine that cannot
+run Xcode.
+
+The same `scripts/speedflight.sh` runs unchanged; it skips the dirty-tree
+and pushed checks when `CI` is set.
+
+## 1. Secrets and variables
+
+```bash
+gh secret set ASC_KEY_ID --body "ABC123DEFG"
+gh secret set ASC_ISSUER_ID --body "12345678-abcd-...."
+gh secret set ASC_PRIVATE_KEY < ~/private_keys/AuthKey_ABC123DEFG.p8
+gh secret set SPEEDFLIGHT_SECRET --body "$(grep SPEEDFLIGHT_SECRET .env.speedflight | cut -d= -f2)"
+gh variable set SPEEDFLIGHT_DEEP_LINK --body "tressa://"
+```
+
+Use the same `SPEEDFLIGHT_SECRET` as the local `.env.speedflight`, so local
+and CI builds land on one page.
+
+## 2. Workflow
+
+Write `.github/workflows/speedflight.yml`:
+
+```yaml
+name: Speedflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: One line, what this build is
+        required: true
+      notes:
+        description: What changed and what to test
+        required: true
+  push:
+    branches: ["**"]
+
+concurrency:
+  group: speedflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      SPEEDFLIGHT_SECRET: ${{ secrets.SPEEDFLIGHT_SECRET }}
+      SPEEDFLIGHT_DEEP_LINK: ${{ vars.SPEEDFLIGHT_DEEP_LINK }}
+      SPEEDFLIGHT_AUTHOR: ${{ github.actor }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the ASC key
+        run: |
+          mkdir -p ~/private_keys
+          printf '%s' "${{ secrets.ASC_PRIVATE_KEY }}" > ~/private_keys/AuthKey_${ASC_KEY_ID}.p8
+      # Only for XcodeGen projects.
+      - run: brew install xcodegen
+      - name: Cut and share
+        run: |
+          TITLE="${{ inputs.title }}"
+          NOTES="${{ inputs.notes }}"
+          # On push, the commit message is the title and its body the notes.
+          [ -n "$TITLE" ] || TITLE="$(git log -1 --format=%s)"
+          [ -n "$NOTES" ] || NOTES="$(git log -1 --format=%b)"
+          [ -n "$NOTES" ] || NOTES="$TITLE"
+          scripts/speedflight.sh "$TITLE" "$NOTES" | tee build.log
+          grep '^Build page:' build.log >> "$GITHUB_STEP_SUMMARY"
+```
+
+Notes for you, the agent:
+
+- The page link grants installs. On a public repo, drop the step summary
+  line; anyone can read it. The secret never prints.
+- A fresh runner has no Apple Development certificate, so cloud signing
+  mints one per run, and Apple caps those. After roughly ten runs the
+  archive fails with "reached the maximum number of certificates". The
+  fix is one fixed identity imported from a `.p12` secret before the
+  archive step; ask the user for it when that error appears, and never
+  create or revoke certificates yourself.
+- Screenshots in CI need a simulator run in the workflow. Skip them unless
+  the user asks; the page works without.
+- Tell the user to keep pushing normally. Every push to any branch cuts a
+  build; narrow `branches:` if that is too much.
 
 ---
 
