@@ -13,8 +13,16 @@ devices on the provisioning profile can install it.
 
 ## Install
 
+Tell your agent:
+
+```
+setup speedflight.dev
+```
+
+Or by hand:
+
 ```bash
-npx skills add github.com/jakemor/speedflight --global --yes --agent claude-code universal --skill speedflight
+npx skills add jakemor/speedflight
 ```
 
 Then, in your iOS repo, say `/speedflight`. The agent sets the repo up once
