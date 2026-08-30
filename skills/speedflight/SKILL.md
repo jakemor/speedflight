@@ -156,7 +156,7 @@ step 1. Commit it. It is the whole pipeline: archive, export, upload, link.
 # link as the last line. Signs through the App Store Connect key in
 # .env.speedflight; the key must belong to DEVELOPMENT_TEAM.
 #
-#   scripts/speedflight.sh "<title>" "<notes>"
+#   scripts/speedflight.sh "<title>" "<notes>" [screenshot.png ...]
 #
 # The page link is the only auth for installing. The secret in
 # .env.speedflight is the only auth for uploading. Do not paste either
@@ -164,8 +164,10 @@ step 1. Commit it. It is the whole pipeline: archive, export, upload, link.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TITLE="${1:?usage: speedflight.sh \"<title>\" \"<notes>\"}"
-NOTES="${2:?usage: speedflight.sh \"<title>\" \"<notes>\"}"
+TITLE="${1:?usage: speedflight.sh \"<title>\" \"<notes>\" [screenshot.png ...]}"
+NOTES="${2:?usage: speedflight.sh \"<title>\" \"<notes>\" [screenshot.png ...]}"
+shift 2
+SCREENSHOTS=("$@")
 
 if [[ -f .env.speedflight ]]; then
   set -a
@@ -274,7 +276,21 @@ upload() {
 }
 upload "$BASE" || upload "$FALLBACK_BASE"
 
-# 3. Icon, if configured. Best effort.
+# 3. Screenshots, if given: what changed, as pictures. Named 01-, 02-, ...
+#    so the page keeps the order you passed them in.
+n=0
+for shot in "${SCREENSHOTS[@]}"; do
+  [[ -f "$shot" ]] || { echo "no such screenshot: $shot" >&2; continue; }
+  n=$((n + 1))
+  ext="${shot##*.}"
+  case "$ext" in png|PNG) type=image/png ;; jpg|jpeg|JPG|JPEG) type=image/jpeg ;; webp) type=image/webp ;; *) echo "skip $shot: not png/jpg/webp" >&2; continue ;; esac
+  name="$(printf '%02d-%s' "$n" "$(basename "$shot" | tr -c 'A-Za-z0-9._-\n' '-')")"
+  curl -sfS --retry 3 --retry-all-errors --retry-delay 3 \
+    -X PUT "$BASE/api/apps/$SPEEDFLIGHT_SECRET/$BUNDLE_ID/builds/$BUILD_ID/screenshots/$name" \
+    -H "Content-Type: $type" --data-binary @"$shot" >/dev/null || echo "screenshot upload failed: $shot" >&2
+done
+
+# 4. Icon, if configured. Best effort.
 if [[ -n "${SPEEDFLIGHT_ICON:-}" && -f "$SPEEDFLIGHT_ICON" ]]; then
   curl -sS -X PUT "$BASE/api/apps/$SPEEDFLIGHT_SECRET/$BUNDLE_ID/icon" \
     -H "Content-Type: image/png" --data-binary @"$SPEEDFLIGHT_ICON" >/dev/null || true
@@ -307,7 +323,15 @@ Notes for you, the agent:
    title is one line, what this build is. The notes say what changed and
    what to test, written for the person holding the phone. Plain text, a
    few short lines, no markdown headers.
-3. **Run the script.**
+3. **Screenshots (optional, encouraged).** The page shows them like the
+   App Store, but they are not marketing. They show what changed: the
+   screens you touched, before and after if that helps. Use what you have:
+   screenshots the user gave you, or ones you took while testing on the
+   simulator (`xcrun simctl io booted screenshot 01-paywall.png`). Do not
+   start a simulator build just to get them. Any mix of iPhone and iPad,
+   portrait and landscape, lays out fine; the page sets one height. PNG,
+   JPG, or WebP, under 10MB each, at most 12.
+4. **Run the script.**
    ```bash
    scripts/speedflight.sh "Onboarding paywall rewrite" "$(cat <<'EOF'
    What changed
@@ -318,10 +342,11 @@ Notes for you, the agent:
    - Fresh install, go through onboarding, tap Restore with Wi-Fi off
    - Check the paywall shows 3 plans and the annual one is selected
    EOF
-   )"
+   )" shots/paywall.png shots/restore.png
    ```
+   Screenshot paths come after the notes, in the order they should show.
    It takes 2 to 5 minutes. The last line is `Build page: <url>`.
-4. **Post the link in the chat.** Every run, always, as a plain URL on its
+5. **Post the link in the chat.** Every run, always, as a plain URL on its
    own line so it is tappable. Say what is on it: the title, version and
    build number, and that Install works from Safari on a registered iPhone.
    Do not paste the link anywhere public. Do not print the secret.
@@ -334,6 +359,8 @@ If the script fails:
   the scheme built a different target than `BUNDLE_ID`. Fix the script's
   facts.
 - "working tree is dirty" or "HEAD is not pushed": go back to step 1.
+  Screenshots do not need to be committed; keep them out of git if they
+  are throwaway.
 - Upload timeouts: the script retries and falls back to the workers.dev host
   on its own. Run it again if both fail.
 
@@ -349,6 +376,8 @@ POST   /api/apps/:secret/:bundleId/builds
        -> 201 {buildId, pageId, pageUrl, buildUrl}
 PUT    /api/apps/:secret/:bundleId/builds/:buildId/app.ipa      raw IPA bytes
        -> {ok, appName, shortVersion, buildVersion, size, pageUrl, buildUrl}
+PUT    /api/apps/:secret/:bundleId/builds/:buildId/screenshots/:name   raw image, under 10MB
+       name like 01-home.png (png, jpg, webp); at most 12 per build
 PUT    /api/apps/:secret/:bundleId/icon                         raw PNG, under 2MB
 DELETE /api/apps/:secret/:bundleId/builds/:buildId
 
