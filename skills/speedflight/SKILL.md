@@ -352,7 +352,10 @@ Notes for you, the agent:
    Screenshot paths come after the notes, in the order they should show.
    It takes 2 to 5 minutes. The last line is `Build page: <url>`.
 5. **Post the link in the chat.** Every run, always, as a plain URL on its
-   own line so it is tappable. Say what is on it: the title, version and
+   own line so it is tappable. The link is the app page, the `Build page:`
+   line the script prints: `https://speedflight.dev/a/<pageId>`. Never
+   share a URL with a build id after it (`/a/<pageId>/<buildId>`); that is
+   one build's install page, and the user wants the page with all of them. Say what is on it: the title, version and
    build number, and that Install works from Safari on a registered iPhone.
    Do not paste the link anywhere public. Do not print the secret.
 
@@ -473,9 +476,9 @@ Writes need the secret and bundle id. Reads need only the page id.
 ```
 POST   /api/apps/:secret/:bundleId/builds
        JSON: {title, notes, deepLink, branch, commit, author}  all required
-       -> 201 {buildId, pageId, pageUrl, buildUrl}
+       -> 201 {buildId, pageId, pageUrl}
 PUT    /api/apps/:secret/:bundleId/builds/:buildId/app.ipa      raw IPA bytes
-       -> {ok, appName, shortVersion, buildVersion, size, pageUrl, buildUrl}
+       -> {ok, appName, shortVersion, buildVersion, size, pageUrl}
 PUT    /api/apps/:secret/:bundleId/builds/:buildId/screenshots/:name   raw image, under 10MB
        name like 01-home.png (png, jpg, webp); at most 12 per build
 PUT    /api/apps/:secret/:bundleId/icon                         raw PNG, under 2MB
@@ -486,8 +489,8 @@ GET    /api/pages/:pageId/builds/:buildId          one build
 GET    /api/pages/:pageId/builds/:buildId/app.ipa  download
 GET    /api/pages/:pageId/builds/:buildId/manifest.plist   OTA manifest
 
-Page for humans:   https://speedflight.dev/a/:pageId
-One build's page:  https://speedflight.dev/a/:pageId/:buildId
+Page to share:     https://speedflight.dev/a/:pageId   (this one, always)
+One build's page:  https://speedflight.dev/a/:pageId/:buildId   (what the QR opens; do not share)
 ```
 
 Secret format: 32 to 128 chars of `[A-Za-z0-9_-]`. Mint with
