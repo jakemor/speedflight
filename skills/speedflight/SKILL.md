@@ -288,8 +288,10 @@ upload "$BASE" || upload "$FALLBACK_BASE"
 
 # 3. Screenshots, if given: what changed, as pictures. Named 01-, 02-, ...
 #    so the page keeps the order you passed them in.
+# The guarded expansion keeps macOS bash 3.2's set -u happy when no
+# screenshots were passed; a bare "${SCREENSHOTS[@]}" aborts the script.
 n=0
-for shot in "${SCREENSHOTS[@]}"; do
+for shot in ${SCREENSHOTS[@]+"${SCREENSHOTS[@]}"}; do
   [[ -f "$shot" ]] || { echo "no such screenshot: $shot" >&2; continue; }
   n=$((n + 1))
   ext="${shot##*.}"
