@@ -200,6 +200,9 @@ OUT="build/share"
 # pushed commit by definition, and a detached HEAD has no upstream to test.
 BRANCH="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
 COMMIT="$(git rev-parse HEAD)"
+# https form of origin, so the page can link the branch and commit.
+REPO_URL="$(git remote get-url origin 2>/dev/null | sed -E 's#^git@([^:]+):#https://\1/#; s#\.git$##')"
+case "$REPO_URL" in https://*) ;; *) REPO_URL="" ;; esac
 if [[ -z "${CI:-}" ]]; then
   if [[ -n "$(git status --porcelain)" ]]; then
     echo "working tree is dirty: commit before sharing a build" >&2
@@ -262,7 +265,9 @@ META="$(jq -n \
   --arg deepLink "$SPEEDFLIGHT_DEEP_LINK" \
   --arg branch "$BRANCH" --arg commit "$COMMIT" \
   --arg author "$SPEEDFLIGHT_AUTHOR" \
-  '{title:$title, notes:$notes, deepLink:$deepLink, branch:$branch, commit:$commit, author:$author}')"
+  --arg repoUrl "$REPO_URL" \
+  '{title:$title, notes:$notes, deepLink:$deepLink, branch:$branch, commit:$commit, author:$author}
+   + (if $repoUrl == "" then {} else {repoUrl:$repoUrl} end)')"
 create() {
   curl -sfS --retry 3 --retry-all-errors --retry-delay 3 \
     -X POST "$1/api/apps/$SPEEDFLIGHT_SECRET/$BUNDLE_ID/builds" \
@@ -476,6 +481,7 @@ Writes need the secret and bundle id. Reads need only the page id.
 ```
 POST   /api/apps/:secret/:bundleId/builds
        JSON: {title, notes, deepLink, branch, commit, author}  all required
+             {repoUrl}  optional https repo URL; links branch + author on the page
        -> 201 {buildId, pageId, pageUrl}
 PUT    /api/apps/:secret/:bundleId/builds/:buildId/app.ipa      raw IPA bytes
        -> {ok, appName, shortVersion, buildVersion, size, pageUrl}
