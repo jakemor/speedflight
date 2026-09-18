@@ -1,6 +1,6 @@
 ---
 name: speedflight
-description: Share a local iOS build with a registered iPhone that is not connected to this Mac. Cuts a cloud-signed build, uploads it to Speedflight (speedflight.dev), and posts a link in the chat that installs from Safari. Use it proactively, without being asked, whenever the user wants a build on their device and the device is not plugged in or reachable (run-on-device fails, "send me the build", "I'm away from my desk", "put this on my phone"). Also use on "/speedflight" or "share a build", and to set up Speedflight for a repo.
+description: Share a local iOS build with a registered iPhone that is not connected to this Mac. Cuts a cloud-signed build, uploads it to Speedflight (speedflight.dev), and posts a link in the chat that installs from Safari. Use it proactively, without being asked, whenever the user wants a build on their device and the device is not plugged in or reachable (run-on-device fails, "send me the build", "I'm away from my desk", "put this on my phone"). Also use on "/speedflight" or "share a build", to set up Speedflight for a repo, and when the user asks to add a device or a teammate's phone to Speedflight (mints an enroll link, pulls the UDIDs down, registers them with Apple).
 user-invocable: true
 ---
 
@@ -42,6 +42,9 @@ signature is the safety.
 - First run in a repo (no `.env.speedflight`, or no `scripts/speedflight.sh`):
   do **Setup**, then **Share a build**.
 - Every later run: **Share a build**.
+- If the user asks to add a device, or to get a teammate's phone onto
+  Speedflight: **Add a device**. Only when asked in words; never on your
+  own.
 - If the user asks for it to run without a Mac, or from a Linux devbox or
   sandbox: **On request: run it in GitHub Actions**.
 
@@ -381,6 +384,96 @@ If the script fails:
 
 ---
 
+# Add a device (only when asked)
+
+An ad hoc build installs only on devices registered to the signing Apple
+account, and the device list inside an IPA is fixed at export time. A new
+phone needs its UDID registered, then a new build. Reading a UDID off a
+phone that is not plugged into this Mac is what the enroll link is for.
+
+Run this when the user says something like "add a device to Speedflight",
+"add my teammate's phone", or "get Sam's iPhone on the builds". Not on
+your own, and not as part of Share a build.
+
+## 1. Mint the enroll link
+
+`BUNDLE_ID` is the value in `scripts/speedflight.sh`.
+
+```bash
+set -a; source .env.speedflight; set +a
+curl -sfS -X POST "https://speedflight.dev/api/apps/$SPEEDFLIGHT_SECRET/$BUNDLE_ID/devices/link"
+```
+
+It answers `{enrollId, enrollUrl}`. The link is derived from the secret and
+works from now until it is revoked. Post `enrollUrl` in the chat on its own
+line, and tell the user what the teammate does with it:
+
+1. Open the link in Safari on the iPhone to add. Other browsers cannot
+   hand a profile to Settings. On a desktop the page shows a QR code.
+2. Type a name and tap Install profile, then allow the download.
+3. Open Settings, tap Profile Downloaded, tap Install. Safari returns to
+   the page to confirm. The profile can be deleted right after.
+
+The profile is Apple's own UDID mechanism. It reads the UDID, model, and
+iOS build and nothing else, and the install sheet says "Unverified"
+because it is not signed. Say that if the teammate asks.
+
+## 2. Pull the devices down
+
+When the user says the teammate is done, or asks who has enrolled:
+
+```bash
+curl -sfS "https://speedflight.dev/api/apps/$SPEEDFLIGHT_SECRET/$BUNDLE_ID/devices" \
+  | jq -r '.devices[] | [.udid, (.name // "-"), (.product // "-"), .addedAt] | @tsv'
+```
+
+Show the list: name, model, UDID, when. Then check which are already on
+the team. `asc` (`brew install asc`) reads the same `ASC_KEY_ID`,
+`ASC_ISSUER_ID`, and `ASC_PRIVATE_KEY_PATH` names `.env.speedflight` uses,
+so the sourced environment is enough:
+
+```bash
+export ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY_PATH
+asc devices list --platform IOS --paginate --fields udid,name,status --output table
+```
+
+## 3. Register the new ones
+
+Registering is a one-way door. Apple allows 100 devices per type per
+membership year, and a removed device keeps its slot until the year rolls
+over. Show the user the devices that are not on the team yet and ask
+before registering. Then, for each:
+
+```bash
+asc devices register --name "<name>'s iPhone" --udid "<udid>" --platform IOS
+```
+
+Use the enrolled name when there is one, the model otherwise. If `asc` is
+not installed and the user does not want it, give them the UDIDs to add at
+App Store Connect → Devices by hand.
+
+## 4. Cut a new build
+
+Run **Share a build**. The export picks up every registered device on its
+own; there is nothing to configure. Builds cut before the registration
+will not install on the new phone, so post the new page link.
+
+## Housekeeping
+
+- Revoke the link when the user asks to stop new enrollments. The device
+  list stays.
+  ```bash
+  curl -sfS -X DELETE "https://speedflight.dev/api/apps/$SPEEDFLIGHT_SECRET/$BUNDLE_ID/devices/link"
+  ```
+- Forget one device from the list (this does not touch Apple):
+  ```bash
+  curl -sfS -X DELETE "https://speedflight.dev/api/apps/$SPEEDFLIGHT_SECRET/$BUNDLE_ID/devices/<udid>"
+  ```
+- Minting again returns the same link; it is derived, not random. A new
+  secret is the only way to get a different one.
+
+---
+
 # On request: run it in GitHub Actions
 
 Only when the user asks. The default is the Mac in front of them. The
@@ -492,6 +585,11 @@ PUT    /api/apps/:secret/:bundleId/builds/:buildId/screenshots/:name   raw image
 PUT    /api/apps/:secret/:bundleId/icon                         raw PNG, under 2MB
 DELETE /api/apps/:secret/:bundleId/builds/:buildId
 
+POST   /api/apps/:secret/:bundleId/devices/link      activate the enroll link -> {enrollId, enrollUrl}
+DELETE /api/apps/:secret/:bundleId/devices/link      revoke it
+GET    /api/apps/:secret/:bundleId/devices           -> {enrollUrl | null, devices: [{udid, name, product, version, serial, addedAt}]}
+DELETE /api/apps/:secret/:bundleId/devices/:udid     forget one
+
 GET    /api/pages/:pageId                          app + builds JSON
 GET    /api/pages/:pageId/builds/:buildId          one build
 GET    /api/pages/:pageId/builds/:buildId/app.ipa  download
@@ -499,6 +597,7 @@ GET    /api/pages/:pageId/builds/:buildId/manifest.plist   OTA manifest
 
 Page to share:     https://speedflight.dev/a/:pageId   (this one, always)
 One build's page:  https://speedflight.dev/a/:pageId/:buildId   (what the QR opens; do not share)
+Enroll a device:   https://speedflight.dev/d/:enrollId  (send to the teammate; mint it first)
 ```
 
 Secret format: 32 to 128 chars of `[A-Za-z0-9_-]`. Mint with
